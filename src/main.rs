@@ -187,6 +187,7 @@ enum Expr {
     // String concatenation via +
     // List literal
     ListLiteral(Vec<Expr>),
+    DictLiteralExpr(Vec<Expr>, Vec<Expr>), // keys, values
 }
 
 // ============================================================
@@ -1039,13 +1040,26 @@ impl Parser {
             return Expr::ListLiteral(parse_list_contents(inner));
         }
 
-        // Dict/JSON object literal: {"key": "val"}
+        // Dict/JSON object literal: {"key": "val"} or {"key": variable}
         if s.starts_with('{') && s.ends_with('}') {
             if s == "{}" {
                 return Expr::Lit(PyVal::Dict(HashMap::new()));
             }
+            // First try pure JSON parse (fast path)
             if let Ok(v) = serde_json::from_str::<Value>(s) {
                 return Expr::Lit(PyVal::from_json(&v));
+            }
+            // Fallback: parse as dict with expression values (supports variables)
+            let inner = &s[1..s.len()-1];
+            let pairs = parse_dict_contents(inner);
+            if !pairs.is_empty() {
+                // Evaluate each pair at runtime
+                let keys: Vec<Expr> = pairs.iter().map(|(k, _)| k.clone()).collect();
+                let vals: Vec<Expr> = pairs.iter().map(|(_, v)| v.clone()).collect();
+                // Use a special approach: create a dict by evaluating pairs
+                // We'll use a Concat-like approach but for dicts
+                // For now, store as DictLiteral expr
+                return Expr::DictLiteralExpr(keys, vals);
             }
         }
 
@@ -1659,6 +1673,15 @@ impl Env {
 
             Expr::ListLiteral(items) => {
                 PyVal::List(items.iter().map(|e| self.eval(e)).collect())
+            }
+            Expr::DictLiteralExpr(keys, vals) => {
+                let mut map = HashMap::new();
+                for (k, v) in keys.iter().zip(vals.iter()) {
+                    let key = self.eval(k).to_str();
+                    let val = self.eval(v);
+                    map.insert(key, val);
+                }
+                PyVal::Dict(map)
             }
         }
     }
