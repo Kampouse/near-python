@@ -1,6 +1,15 @@
 # test_view.py — Test near.view() calls
 config = near.view("contract.main.burrow.near", "get_config", {})
-print(f"Config type: {config}")
+print(f"Config type: {type(config)}")
 
-version = near.view("wrap.near", "get_version", {})
-print(f"wrap.near version: {version}")
+# Test account view
+account = near.view_account("wrap.near")
+print(f"wrap.near account: {type(account)}")
+
+# Test block height
+block = near.block_height()
+print(f"Block height: {block}")
+
+# Test block query
+block_data = near.block("final")
+print(f"Block data type: {type(block_data)}")

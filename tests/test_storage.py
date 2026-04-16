@@ -1,4 +1,4 @@
-# test_storage.py — Test near.storage operations
+# test_storage.py — Test near.storage operations (in-memory)
 
 # Put a value
 near.storage.put("test_key", json.dumps({"hello": "world", "count": 42}))
@@ -12,3 +12,7 @@ print(f"Got: {value}")
 block = near.block_height()
 near.storage.put("last_block", json.dumps({"height": block}))
 print(f"Stored block {block}")
+
+# Verify retrieval
+stored = near.storage.get("last_block")
+print(f"Retrieved: {stored}")
