@@ -6,9 +6,6 @@
 //! boolean/arithmetic operators, range(), near.view/call/block/storage,
 //! json operations, http stubs, and more.
 
-mod policy;
-
-use policy::Policy;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Read;
@@ -155,7 +152,6 @@ enum Expr {
     UnaryOp(UnaryOp, Box<Expr>),
     // NEAR builtins
     NearView(Box<Expr>, Box<Expr>, Box<Expr>),
-    #[cfg(any(feature = "tier2", feature = "tier3"))]
     NearCall(Vec<Expr>), // 7 or 8 args
     NearBlock(Box<Expr>),
     NearBlockHeight,
@@ -185,18 +181,12 @@ enum Expr {
     FuncCall(String, Vec<Expr>),
     // f-string
     Concat(Vec<Expr>),
-    // Tier 3: transfer and raw tx
-    #[cfg(feature = "tier3")]
-    NearTransfer(Vec<Expr>),  // signer_id, signer_key, receiver_id, amount_yocto [, wait_until]
-    #[cfg(feature = "tier3")]
-    NearSendTx(Box<Expr>),    // signed_tx_base64
     // HTTP stubs
     HttpGet(Box<Expr>),
     HttpPost(Box<Expr>, Box<Expr>),
     // String concatenation via +
     // List literal
     ListLiteral(Vec<Expr>),
-    DictLiteralExpr(Vec<Expr>, Vec<Expr>), // keys, values
 }
 
 // ============================================================
@@ -938,7 +928,6 @@ impl Parser {
                                 "near.block_height",
                                 "near.view_account", "near.view_access_key",
                                 "near.storage.get", "near.storage.put",
-                                "near.transfer", "near.send_tx",
                                 "json.dumps", "json.loads",
                                 "http.get", "http.post",
                             ].contains(&full_name.as_str());
@@ -1006,7 +995,6 @@ impl Parser {
                 Box::new(args[1].clone()),
                 Box::new(args[2].clone()),
             ),
-            #[cfg(any(feature = "tier2", feature = "tier3"))]
             "near.call" => Expr::NearCall(args),
             "near.block" if args.len() >= 1 => Expr::NearBlock(Box::new(args[0].clone())),
             "near.block_height" => Expr::NearBlockHeight,
@@ -1023,10 +1011,6 @@ impl Parser {
             "int" if args.len() >= 1 => Expr::Int_(Box::new(args[0].clone())),
             "str" if args.len() >= 1 => Expr::Str_(Box::new(args[0].clone())),
             "type" if args.len() >= 1 => Expr::TypeOf(Box::new(args[0].clone())),
-            #[cfg(feature = "tier3")]
-            "near.transfer" => Expr::NearTransfer(args),
-            #[cfg(feature = "tier3")]
-            "near.send_tx" if args.len() >= 1 => Expr::NearSendTx(Box::new(args[0].clone())),
             "http.get" if args.len() >= 1 => Expr::HttpGet(Box::new(args[0].clone())),
             "http.post" if args.len() >= 2 => Expr::HttpPost(
                 Box::new(args[0].clone()),
@@ -1055,26 +1039,13 @@ impl Parser {
             return Expr::ListLiteral(parse_list_contents(inner));
         }
 
-        // Dict/JSON object literal: {"key": "val"} or {"key": variable}
+        // Dict/JSON object literal: {"key": "val"}
         if s.starts_with('{') && s.ends_with('}') {
             if s == "{}" {
                 return Expr::Lit(PyVal::Dict(HashMap::new()));
             }
-            // First try pure JSON parse (fast path)
             if let Ok(v) = serde_json::from_str::<Value>(s) {
                 return Expr::Lit(PyVal::from_json(&v));
-            }
-            // Fallback: parse as dict with expression values (supports variables)
-            let inner = &s[1..s.len()-1];
-            let pairs = parse_dict_contents(inner);
-            if !pairs.is_empty() {
-                // Evaluate each pair at runtime
-                let keys: Vec<Expr> = pairs.iter().map(|(k, _)| k.clone()).collect();
-                let vals: Vec<Expr> = pairs.iter().map(|(_, v)| v.clone()).collect();
-                // Use a special approach: create a dict by evaluating pairs
-                // We'll use a Concat-like approach but for dicts
-                // For now, store as DictLiteral expr
-                return Expr::DictLiteralExpr(keys, vals);
             }
         }
 
@@ -1161,17 +1132,15 @@ struct Env {
     funcs: HashMap<String, FuncDef>,
     storage: HashMap<String, String>,
     output: String,
-    policy: Policy,
 }
 
 impl Env {
-    fn new(policy: Policy) -> Self {
+    fn new() -> Self {
         Env {
             vars: HashMap::new(),
             funcs: HashMap::new(),
             storage: HashMap::new(),
             output: String::new(),
-            policy,
         }
     }
 
@@ -1281,19 +1250,8 @@ impl Env {
                 }
             }
 
-            #[cfg(any(feature = "tier2", feature = "tier3"))]
             Expr::NearCall(args) => {
                 let eval_args: Vec<String> = args.iter().map(|a| self.eval(a).to_str()).collect();
-                let (receiver, method, deposit, gas) = if eval_args.len() >= 7 {
-                    (&eval_args[2], &eval_args[3], &eval_args[5], &eval_args[6])
-                } else {
-                    return PyVal::Str("error: near.call needs at least 7 args".to_string());
-                };
-                // Policy check
-                if let Err(e) = self.policy.check_call(receiver, method, gas, deposit) {
-                    eprintln!("Policy denied: {}", e);
-                    return PyVal::Str(format!("PolicyError: {}", e));
-                }
                 let (result, err) = if eval_args.len() >= 8 {
                     near::rpc::api::call(
                         &eval_args[0], &eval_args[1], &eval_args[2], &eval_args[3],
@@ -1305,6 +1263,7 @@ impl Env {
                         &eval_args[4], &eval_args[5], &eval_args[6], "FINAL",
                     )
                 } else {
+                    eprintln!("near.call needs at least 7 args");
                     return PyVal::Str("error: not enough args".to_string());
                 };
                 if !err.is_empty() {
@@ -1359,47 +1318,6 @@ impl Env {
                         Ok(v) => PyVal::from_json(&v),
                         Err(_) => PyVal::Str(result),
                     }
-                }
-            }
-
-            #[cfg(feature = "tier3")]
-            Expr::NearTransfer(args) => {
-                let eval_args: Vec<String> = args.iter().map(|a| self.eval(a).to_str()).collect();
-                if eval_args.len() < 4 {
-                    return PyVal::Str("error: near.transfer needs at least 4 args (signer_id, signer_key, receiver_id, amount)".to_string());
-                }
-                let amount = &eval_args[3];
-                // Policy check
-                if let Err(e) = self.policy.check_transfer(amount) {
-                    eprintln!("Policy denied: {}", e);
-                    return PyVal::Str(format!("PolicyError: {}", e));
-                }
-                let wait_until = eval_args.get(4).map(|s| s.as_str()).unwrap_or("FINAL");
-                let (result, err) = near::rpc::api::transfer(
-                    &eval_args[0], &eval_args[1], &eval_args[2], &eval_args[3], wait_until,
-                );
-                if !err.is_empty() {
-                    eprintln!("near.transfer error: {}", err);
-                    PyVal::Str(err)
-                } else {
-                    PyVal::Str(result)
-                }
-            }
-
-            #[cfg(feature = "tier3")]
-            Expr::NearSendTx(tx_expr) => {
-                let signed_tx = self.eval(tx_expr).to_str();
-                // Policy check
-                if let Err(e) = self.policy.check_send_tx() {
-                    eprintln!("Policy denied: {}", e);
-                    return PyVal::Str(format!("PolicyError: {}", e));
-                }
-                let (result, err) = near::rpc::api::send_tx(&signed_tx, "EXECUTED_OPTIMISTIC");
-                if !err.is_empty() {
-                    eprintln!("near.send_tx error: {}", err);
-                    PyVal::Str(err)
-                } else {
-                    PyVal::Str(result)
                 }
             }
 
@@ -1742,15 +1660,6 @@ impl Env {
             Expr::ListLiteral(items) => {
                 PyVal::List(items.iter().map(|e| self.eval(e)).collect())
             }
-            Expr::DictLiteralExpr(keys, vals) => {
-                let mut map = HashMap::new();
-                for (k, v) in keys.iter().zip(vals.iter()) {
-                    let key = self.eval(k).to_str();
-                    let val = self.eval(v);
-                    map.insert(key, val);
-                }
-                PyVal::Dict(map)
-            }
         }
     }
 
@@ -1877,44 +1786,20 @@ fn main() {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
 
-    let (script, policy_val) = if input.trim().is_empty() {
-        ("print(\"No script provided.\")".to_string(), serde_json::Value::Null)
+    let script = if input.trim().is_empty() {
+        "print(\"No script provided.\")".to_string()
     } else if input.trim().starts_with('{') {
-        match serde_json::from_str::<serde_json::Value>(&input) {
-            Ok(v) => {
-                let script = v.get("script")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("print(\"Invalid JSON input.\")")
-                    .to_string();
-                let policy = v.get("policy").cloned().unwrap_or(serde_json::Value::Null);
-                (script, policy)
-            }
-            Err(_) => ("print(\"Invalid JSON input.\")".to_string(), serde_json::Value::Null),
-        }
+        serde_json::from_str::<serde_json::Value>(&input)
+            .ok()
+            .and_then(|v| v.get("script").cloned())
+            .and_then(|s| s.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "print(\"Invalid JSON input.\")".to_string())
     } else {
-        (input, serde_json::Value::Null)
-    };
-
-    let policy = if policy_val.is_null() {
-        // Check env var for policy file path
-        if let Ok(path) = std::env::var("NEAR_PYTHON_POLICY") {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                match serde_json::from_str::<serde_json::Value>(&content) {
-                    Ok(v) => Policy::from_json(&v),
-                    Err(_) => Policy::default_for_tier(1),
-                }
-            } else {
-                Policy::default_for_tier(1)
-            }
-        } else {
-            Policy::default_for_tier(1)
-        }
-    } else {
-        Policy::from_json(&policy_val)
+        input
     };
 
     let ops = Parser::parse(&script);
-    let mut env = Env::new(policy);
+    let mut env = Env::new();
     env.exec(&ops);
 
     use std::io::Write;
