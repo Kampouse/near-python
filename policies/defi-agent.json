@@ -1,0 +1,12 @@
+{
+  "tier": 2,
+  "allowed_contracts": {
+    "v2.ref-finance.near": ["swap", "get_return", "get_pools"],
+    "dclv2.ref-labs.near": ["swap", "get_pool"],
+    "contract.main.burrow.near": ["get_config", "get_assets"]
+  },
+  "blocked_methods": ["transfer", "withdraw", "send", "delete_account", "ft_transfer"],
+  "max_gas": "200000000000000",
+  "max_deposit": "0",
+  "max_calls_per_run": 10
+}

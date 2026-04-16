@@ -1,0 +1,7 @@
+{
+  "tier": 3,
+  "max_gas": "300000000000000",
+  "max_deposit": "1000000000000000000000000",
+  "max_calls_per_run": 20,
+  "attested_hashes": ["sha256:abc123..."]
+}

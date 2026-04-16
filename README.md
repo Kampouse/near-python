@@ -224,6 +224,88 @@ cargo build --target wasm32-wasip2 --release
 ls -lh target/wasm32-wasip2/release/near-python.wasm
 ```
 
+## 🔒 Security Model — 3-Tier Access Control
+
+near-python uses a **compile-time + runtime** security model with three tiers. Each tier determines which host functions are available (via WIT definitions) and enforces runtime policy rules.
+
+### Tiers
+
+| Tier | Name | Capabilities | Use Case |
+|------|------|-------------|----------|
+| **1** | Read-only | `view`, `view_account`, `view_access_key`, `view_access_key_list`, `block`, `gas_price`, `status` | Data analysis, monitoring, oracles |
+| **2** | Whitelisted calls | Tier 1 + `call` (with contract/method allowlists) | DeFi agents, swap bots, managed trading |
+| **3** | Full access | Tier 2 + `transfer`, `send_tx` | Autonomous agents, payment processors |
+
+### Building a Tier
+
+```bash
+# Build a specific tier
+make tier1    # Read-only (~304KB)
+make tier2    # Whitelisted calls (~304KB)
+make tier3    # Full access (~304KB)
+
+# Or build all at once
+make all-tiers
+```
+
+### Policy Engine
+
+Each tier also enforces **runtime policies** — JSON configuration passed alongside the script that controls what operations are allowed.
+
+**Policy fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tier` | `1\|2\|3` | Access tier (must match or exceed compiled tier) |
+| `allowed_contracts` | `object` | `{"contract.near": ["method1", "method2"]}` — empty array = all methods |
+| `blocked_methods` | `string[]` | Always-blocked method names (e.g., `["transfer", "withdraw"]`) |
+| `max_gas` | `string` | Max gas per call (yoctoNEAR as string) |
+| `max_deposit` | `string` | Max deposit per call |
+| `max_calls_per_run` | `number` | Rate limit — max `call()` invocations per script run |
+| `attested_hashes` | `string[]` | Tier 3: only allow these WASM hashes |
+
+**Passing policy via stdin JSON:**
+
+```json
+{
+  "script": "result = near.view('v2.ref-finance.near', 'get_pools', '{}', 'final')\nprint(result)",
+  "policy": {"tier": 1}
+}
+```
+
+**Passing policy via environment variable:**
+
+```bash
+export NEAR_PYTHON_POLICY=policies/defi-agent.json
+echo 'result = near.call(...)' | inlayer run near-python-tier2.wasm
+```
+
+### Example Policies
+
+See `policies/` directory:
+
+- **`readonly.json`** — `{"tier": 1}` — Pure read-only access
+- **`defi-agent.json`** — Tier 2 with Ref Finance + Burrow whitelisted, transfer blocked, 10 calls/run max
+- **`full-access.json`** — Tier 3 with spending limits and attested hashes
+
+### Enforcement Rules
+
+**Before every `near.call()`:**
+1. Check tier ≥ 2 (tier 1 → reject)
+2. Check receiver is in `allowed_contracts` (if set)
+3. Check method is not in `blocked_methods`
+4. Check method is in contract's allowed list (if set)
+5. Check gas ≤ `max_gas`
+6. Check deposit ≤ `max_deposit`
+7. Increment call counter, check ≤ `max_calls_per_run`
+
+**Before every `near.transfer()`:**
+1. Check tier ≥ 3
+2. Check amount ≤ `max_deposit`
+3. Same rate limiting
+
+If any check fails, the call returns `"PolicyError: <reason>"` instead of executing.
+
 ## Limitations
 
 - **Single-file:** All code in `src/main.rs` (intentional for simplicity)
