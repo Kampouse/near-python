@@ -1,0 +1,19 @@
+[package]
+name = "near-python"
+version = "0.1.0"
+edition = "2021"
+description = "Python-subset runtime for NEAR OutLayer with blockchain primitives"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+wit-bindgen = "0.36"
+
+[[bin]]
+name = "near-python"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
